@@ -178,6 +178,30 @@ fn variable_font_instances_answer_to_their_windows_names() {
 }
 
 #[test]
+fn qualified_variable_instances_are_cached_per_requested_family() {
+    let db = FontDb::with_font_dirs(Vec::new());
+    db.set_system_fallback(false);
+    if !db.is_loaded("Montserrat") {
+        return; // built without craft-fonts
+    }
+    let before = db.read_faces().len();
+    let a1 = db.face("Montserrat ExtraBold", "Regular {wght:350}");
+    let a2 = db.face("Montserrat ExtraBold", "Regular {wght:350}");
+    assert_eq!(a1.id(), a2.id(), "repeated qualified variable request reuses the cached face");
+    assert_eq!(a1.weight, 350.0);
+    // Distinct qualified families sharing a base family keep separate cache entries even with the
+    // same style string.
+    let eb1 = db.face("Montserrat ExtraBold", "Regular {wdth:100}");
+    let eb2 = db.face("Montserrat ExtraBold", "Regular {wdth:100}");
+    let med = db.face("Montserrat Medium", "Regular {wdth:100}");
+    assert_eq!(eb1.id(), eb2.id());
+    assert_ne!(eb1.id(), med.id());
+    assert_eq!(eb1.weight, 800.0);
+    assert_eq!(med.weight, 500.0);
+    assert_eq!(db.read_faces().len(), before, "cached variable instances do not grow `faces`");
+}
+
+#[test]
 fn faces_without_outlines_are_not_cataloged() {
     // Rename the Semibold's `glyf` table, as in fonts whose glyphs are bitmaps or are stored in
     // Apple's `hvgl` table. The face still maps "A", but its outline is empty. The new tag

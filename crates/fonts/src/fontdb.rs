@@ -368,6 +368,9 @@ struct CatalogEntry {
 /// Process-wide font database.
 pub struct FontDb {
     faces: RwLock<Vec<Arc<FontFace>>>,
+    /// Variable-font axis instances (`Style {wght:650}`), keyed by `(requested_family_lowercase,
+    /// style)` so qualified/legacy names reuse their cached face and stay distinct per qualifier.
+    instances: RwLock<HashMap<(String, String), Arc<FontFace>>>,
     outlines: Mutex<OutlineCache>,
     #[cfg(not(target_arch = "wasm32"))]
     catalog: RwLock<Vec<CatalogEntry>>,
@@ -950,6 +953,7 @@ impl FontDb {
         }
         Self {
             faces: RwLock::new(faces),
+            instances: RwLock::new(HashMap::new()),
             outlines: Mutex::new(OutlineCache::default()),
             #[cfg(not(target_arch = "wasm32"))]
             catalog: RwLock::new(Vec::new()),
@@ -1257,7 +1261,7 @@ impl FontDb {
     }
 
     /// `Style {wght:650,wdth:90}`: the named style's font at those axis values, made on first use.
-    fn instance(&self, family: &str, style: &str) -> Option<Arc<FontFace>> {
+    fn instance(&self, family: &str, style: &str, key: (String, String)) -> Option<Arc<FontFace>> {
         let open = style.find('{')?;
         let base = self.find(family, style[..open].trim())?;
         let Some(font) = base.skrifa().filter(|f| !f.axes().is_empty()) else { return Some(base) };
@@ -1283,19 +1287,17 @@ impl FontDb {
         }
         let f = make_face(base.bytes.clone(), base.index, base.family.clone(), style.to_string(), coords)?;
         let f = Arc::new(f);
-        self.faces.write().unwrap_or_else(std::sync::PoisonError::into_inner).push(f.clone());
-        Some(f)
+        let mut instances = self.instances.write().unwrap_or_else(std::sync::PoisonError::into_inner);
+        Some(instances.entry(key).or_insert(f).clone())
     }
 
     fn find(&self, family: &str, style: &str) -> Option<Arc<FontFace>> {
         if style.contains('{') {
-            {
-                let faces = self.read_faces();
-                if let Some(f) = faces.iter().find(|f| f.family.eq_ignore_ascii_case(family) && f.style == style) {
-                    return Some(f.clone());
-                }
+            let key = (family.to_ascii_lowercase(), style.to_string());
+            if let Some(f) = self.instances.read().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key).cloned() {
+                return Some(f);
             }
-            return self.instance(family, style);
+            return self.instance(family, style, key);
         }
         let faces = self.read_faces();
         let mut cands: Vec<&Arc<FontFace>> = faces.iter().filter(|f| f.family.eq_ignore_ascii_case(family)).collect();
